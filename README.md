@@ -33,14 +33,18 @@ This project is a small RTB (Real-Time Bidding) backend that supports:
 
 - `src/main` - main source code
     - `java` - Java source code
-        - `no.kobler.rtb.app` - main application
-        - `no.kobler.rtb.domains` - domain models
-        - `no.kobler.rtb.services` - service logic
-        - `no.kobler.rtb.adapters` - adapters to external systems (e.g. Redis)
+        - `no.kobler.rtb` - main application package
+            - `controller` - REST API controllers
+            - `dto` - Data Transfer Objects (DTOs)
+            - `model` - JPA entities and domain models
+            - `repository` - JPA repositories
+            - `service` - business logic and services
 - `src/test` - test code
-    - `java` - Java source code
-        - `no.kobler.rtb.app.integrationtest` - integration tests
-        - `no.kobler.rtb.app.unittest` - unit tests
+    - `java` - Java test code
+        - `no.kobler.rtb` - test package structure mirrors main
+            - `controller` - controller tests
+            - `repository` - repository tests
+            - `service` - service layer tests
 - `src/main/resources` - configuration files
     - `application.yml` - main application configuration
     - `application-test.yml` - test application configuration
@@ -49,6 +53,14 @@ This project is a small RTB (Real-Time Bidding) backend that supports:
 ---
 
 ## ▶️ Getting Started
+
+### **Application Access**
+
+- **Application URL**: http://localhost:8080
+- **H2 Database Console**: http://localhost:8080/h2-console
+    - **JDBC URL**: `jdbc:h2:mem:rtbdb`
+    - **Username**: `sa`
+    - **Password**: (leave empty)
 
 ### **Prerequisites**
 
@@ -61,6 +73,22 @@ This project is a small RTB (Real-Time Bidding) backend that supports:
 ```bash
 git clone https://github.com/<your-username>/real-time-bidding-app.git
 cd real-time-bidding-app
-mvn clean verify
-mvn spring-boot:run
+```
 
+#### build the project and run tests
+
+```bash
+mvn clean verify
+```
+
+#### start the application
+
+```bash
+mvn spring-boot:run
+```
+
+#### run tests without skipping any
+
+```bash
+mvn -DskipTests=false test
+```
