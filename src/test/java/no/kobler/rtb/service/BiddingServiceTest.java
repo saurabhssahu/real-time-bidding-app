@@ -19,26 +19,26 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class BiddingServiceTest {
 
     private CampaignRepository campaignRepository;
     private BiddingService biddingService;
-    private Random deterministicRandom;
 
     @BeforeEach
     void setup() {
         campaignRepository = mock(CampaignRepository.class);
         // deterministic random to control prices: will generate predictable doubles
-        deterministicRandom = new Random(123L);
+        Random deterministicRandom = new Random(123L);
         // BiddingService constructor: (CampaignRepository repo, Random random)
         biddingService = new BiddingService(campaignRepository, deterministicRandom);
     }
 
     @Test
     @DisplayName("when no campaigns match bid keywords -> no bid (empty)")
-    void noMatchingCampaigns_returnsNoBid() {
+    void evaluateBid_noMatchingCampaigns_returnsNoBid() {
         // repository returns two campaigns whose keywords do not match
         Campaign campaign1 = new Campaign("A", Set.of("alpha"), new BigDecimal("100.0"));
         campaign1.setId(1L);
@@ -55,33 +55,30 @@ class BiddingServiceTest {
 
     @Test
     @DisplayName("when a single campaign matches and has budget -> return bid and update spending")
-    void singleMatchingCampaign_withBudget_returnsBidAndUpdatesSpending() {
+    void evaluateBid_singleMatchingCampaignWithBudget_returnsBid() {
         Campaign campaign = new Campaign("Camp", Set.of(" Kobler "), new BigDecimal("100.0"));
         campaign.setId(10L);
         campaign.setSpending(BigDecimal.ZERO);
 
         when(campaignRepository.findAll()).thenReturn(List.of(campaign));
 
-        // deterministicRandom will produce a price between 0 and 10
         var decision = biddingService.evaluateBid(42L, Set.of("kobler"));
 
         // We expect a bid
         assertThat(decision.bid()).isTrue();
-        assertThat(decision.bidAmount()).isGreaterThanOrEqualTo(0.0);
-        assertThat(decision.bidAmount()).isLessThanOrEqualTo(10.0);
+        assertThat(decision.bidAmount()).isBetween(0.0, 10.0);
 
-        // Verify the repository saved updated spending once
-        ArgumentCaptor<Campaign> savedCaptor = ArgumentCaptor.forClass(Campaign.class);
-        verify(campaignRepository, times(1)).save(savedCaptor.capture());
+        ArgumentCaptor<Campaign> captor = ArgumentCaptor.forClass(Campaign.class);
+        verify(campaignRepository, times(1)).save(captor.capture());
 
-        Campaign saved = savedCaptor.getValue();
-        // spending should reflect the added bid amount
+        Campaign saved = captor.getValue();
+        // spending should equal the bid amount
         assertThat(saved.getSpending()).isEqualByComparingTo(BigDecimal.valueOf(decision.bidAmount()));
     }
 
     @Test
-    @DisplayName("when matching campaign exists but budget insufficient -> no bid and no update")
-    void matchingCampaign_budgetInsufficient_noBid() {
+    @DisplayName("when matching campaign exists but no budget-> no bid and no update")
+    void evaluateBid_singleMatchingCampaignNoBudget_returnsNoBid() {
         Campaign poor = new Campaign("Poor", Set.of("Kobler"), new BigDecimal("1.0"));
         poor.setId(5L);
         poor.setSpending(new BigDecimal("1.0")); // already spent full budget
@@ -95,8 +92,28 @@ class BiddingServiceTest {
     }
 
     @Test
+    @DisplayName("Single matching campaign with insufficient budget should return no-bid")
+    void evaluateBid_singleMatchingCampaignLessBudget_returnsNoBid() {
+        // Arrange
+        var random = mock(Random.class);
+
+        Campaign campaign = new Campaign("C1", Set.of("sports"), new BigDecimal("5.0"));
+        campaign.setId(1L);
+        campaign.setSpending(new BigDecimal("4.99")); // Almost spent
+        when(campaignRepository.findAll()).thenReturn(List.of(campaign));
+        when(random.nextDouble()).thenReturn(0.5); // Would be 5.0, but budget is 5.0 - 4.99 = 0.01
+
+        // Act
+        var decision = biddingService.evaluateBid(1L, Set.of("sports"));
+
+        // Assert
+        assertThat(decision.bid()).isFalse();
+        verify(campaignRepository, never()).save(any());
+    }
+
+    @Test
     @DisplayName("when multiple campaigns match -> highest price wins")
-    void multipleMatchingCampaigns_highestPriceWins() {
+    void evaluateBid_multipleMatchingCampaigns_selectsHighestBidder() {
         // Create two campaigns that both match "Kobler" with empty spending and large budget
         Campaign campaign1 = new Campaign("Campaign 1", Set.of("Kobler"), new BigDecimal("100.0"));
         campaign1.setId(101L);
@@ -112,15 +129,68 @@ class BiddingServiceTest {
         var decision = biddingService.evaluateBid(1000L, Set.of("kOBLeR"));
 
         assertThat(decision.bid()).isTrue();
-        // verify exactly one save (the winner)
-        verify(campaignRepository, times(1)).save(any());
 
-        // capture which campaign1 was saved (winner) and its spending
+        // verify exactly one save (only winner)
         ArgumentCaptor<Campaign> cap = ArgumentCaptor.forClass(Campaign.class);
-        verify(campaignRepository).save(cap.capture());
-        Campaign winner = cap.getValue();
-        assertThat(winner.getSpending()).isEqualByComparingTo(BigDecimal.valueOf(decision.bidAmount()));
+        verify(campaignRepository, times(1)).save(cap.capture());
+
         // ensure that the winner is one of the candidates
+        Campaign winner = cap.getValue();
         assertThat(List.of(101L, 102L)).contains(winner.getId());
+        // spending must equal decision amount
+        assertThat(winner.getSpending()).isEqualByComparingTo(BigDecimal.valueOf(decision.bidAmount()));
     }
+
+    @Test
+    @DisplayName("Null or empty keywords should return no-bid")
+    void evaluateBid_invalidKeywords_returnsNoBid() {
+        // No need to set up mocks as we expect early return
+
+        // Test null keywords
+        var nullDecision = biddingService.evaluateBid(1L, null);
+        assertThat(nullDecision.bid()).isFalse();
+
+        // Test empty keywords
+        var emptyDecision = biddingService.evaluateBid(1L, Set.of());
+        assertThat(emptyDecision.bid()).isFalse();
+
+        verifyNoInteractions(campaignRepository);
+    }
+
+
+    @Test
+    @DisplayName("If no winner is selected, returns no bid")
+    void evaluateBid_noWinner_returnsNoBid() {
+        // Arrange
+        when(campaignRepository.findAll()).thenReturn(List.of());
+
+        // Act
+        var bidDecision = biddingService.evaluateBid(1L, Set.of("keyword"));
+
+        // Assert
+        assertThat(bidDecision.bid()).isFalse();
+        assertThat(bidDecision.bidAmount()).isEqualTo(0.0);
+    }
+
+    @Test
+    @DisplayName("Single matching campaign with negative price should return no-bid")
+    void evaluateBid_singleMatchingCampaignNegativePrice_returnsNoBid() {
+        // Arrange
+        var random = mock(Random.class);
+        biddingService = new BiddingService(campaignRepository, random);
+
+        Campaign campaign = new Campaign("C1", Set.of("sports"), new BigDecimal("5.0"));
+        campaign.setId(1L);
+        campaign.setSpending(new BigDecimal("4.99")); // Almost spent
+        when(campaignRepository.findAll()).thenReturn(List.of(campaign));
+        when(random.nextDouble()).thenReturn(-2.0); // Would be 5.0, but budget is 5.0 - 4.99 = 0.01
+
+        // Act
+        var decision = biddingService.evaluateBid(1L, Set.of("sports"));
+
+        // Assert
+        assertThat(decision.bid()).isFalse();
+        verify(campaignRepository, never()).save(any());
+    }
+
 }
