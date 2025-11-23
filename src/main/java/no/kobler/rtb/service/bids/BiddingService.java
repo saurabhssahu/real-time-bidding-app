@@ -2,6 +2,7 @@ package no.kobler.rtb.service.bids;
 
 import no.kobler.rtb.model.Campaign;
 import no.kobler.rtb.repository.CampaignRepository;
+import no.kobler.rtb.smoothing.SmoothingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -21,10 +22,12 @@ public class BiddingService {
 
     private final CampaignRepository campaignRepository;
     private final Random random;
+    private final SmoothingService smoothingService;
 
-    public BiddingService(CampaignRepository campaignRepository, Random random) {
+    public BiddingService(CampaignRepository campaignRepository, Random random, SmoothingService smoothingService) {
         this.campaignRepository = campaignRepository;
         this.random = random;
+        this.smoothingService = smoothingService;
     }
 
     /**
@@ -90,12 +93,25 @@ public class BiddingService {
             return new BidDecision(false, 0.0);
         }
 
-        // Commit spending - simple approach for single instance
-        winner.setSpending(newSpending);
-        campaignRepository.save(winner);
-        log.info("Placed bid for bidId={} campaignId={} amount={}", bidId, winner.getId(), bestPrice);
+        // Smoothing: try to reserve tokens for the campaign
+        boolean reserved = smoothingService.tryConsume(winner.getId(), bestPrice);
+        if (!reserved) {
+            // not enough short-term quota
+            log.info("Winner id={} failed smoothing check (insufficient tokens), returning no-bid", winner.getId());
+            return new BidDecision(false, 0.0);
+        }
 
-        return new BidDecision(true, bestPrice);
+        // Persist spending. If saving fails, refund tokens.
+        try {
+            winner.setSpending(newSpending);
+            campaignRepository.save(winner);
+            log.info("Placed bid for bidId={} campaignId={} amount={}", bidId, winner.getId(), bestPrice);
+            return new BidDecision(true, bestPrice);
+        } catch (Exception e) {
+            log.error("Failed to persist spending for campaignId={}, refunding tokens. Error: {}", winner.getId(), e.getMessage());
+            smoothingService.refund(winner.getId(), bestPrice);
+            return new BidDecision(false, 0.0);
+        }
     }
 
     /**

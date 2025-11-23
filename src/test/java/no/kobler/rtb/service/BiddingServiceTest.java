@@ -2,7 +2,9 @@ package no.kobler.rtb.service;
 
 import no.kobler.rtb.model.Campaign;
 import no.kobler.rtb.repository.CampaignRepository;
+import no.kobler.rtb.service.bids.BidDecision;
 import no.kobler.rtb.service.bids.BiddingService;
+import no.kobler.rtb.smoothing.SmoothingService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -14,7 +16,11 @@ import java.util.Random;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -26,14 +32,16 @@ class BiddingServiceTest {
 
     private CampaignRepository campaignRepository;
     private BiddingService biddingService;
+    private SmoothingService smoothingService; // mock
 
     @BeforeEach
     void setup() {
         campaignRepository = mock(CampaignRepository.class);
+        smoothingService = mock(SmoothingService.class);
         // deterministic random to control prices: will generate predictable doubles
         Random deterministicRandom = new Random(123L);
-        // BiddingService constructor: (CampaignRepository repo, Random random)
-        biddingService = new BiddingService(campaignRepository, deterministicRandom);
+        // BiddingService constructor: (CampaignRepository repo, Random random, SmoothingService service)
+        biddingService = new BiddingService(campaignRepository, deterministicRandom, smoothingService);
     }
 
     @Test
@@ -51,6 +59,7 @@ class BiddingServiceTest {
 
         assertThat(decision.bid()).isFalse();
         verify(campaignRepository, never()).save(any());
+        verifyNoInteractions(smoothingService);
     }
 
     @Test
@@ -61,12 +70,15 @@ class BiddingServiceTest {
         campaign.setSpending(BigDecimal.ZERO);
 
         when(campaignRepository.findAll()).thenReturn(List.of(campaign));
+        // allow smoothing reservation
+        when(smoothingService.tryConsume(anyLong(), anyDouble())).thenReturn(true);
 
         var decision = biddingService.evaluateBid(42L, Set.of("kobler"));
 
         // We expect a bid
         assertThat(decision.bid()).isTrue();
-        assertThat(decision.bidAmount()).isBetween(0.0, 10.0);
+        double amount = decision.bidAmount();
+        assertThat(amount).isBetween(0.0, 10.0);
 
         ArgumentCaptor<Campaign> captor = ArgumentCaptor.forClass(Campaign.class);
         verify(campaignRepository, times(1)).save(captor.capture());
@@ -74,6 +86,7 @@ class BiddingServiceTest {
         Campaign saved = captor.getValue();
         // spending should equal the bid amount
         assertThat(saved.getSpending()).isEqualByComparingTo(BigDecimal.valueOf(decision.bidAmount()));
+        verify(smoothingService, times(1)).tryConsume(10L, eq(amount));
     }
 
     @Test
@@ -89,6 +102,8 @@ class BiddingServiceTest {
 
         assertThat(decision.bid()).isFalse();
         verify(campaignRepository, never()).save(any());
+        // smoothing should not be called because budget check fails before smoothing
+        verifyNoInteractions(smoothingService);
     }
 
     @Test
@@ -109,6 +124,26 @@ class BiddingServiceTest {
         // Assert
         assertThat(decision.bid()).isFalse();
         verify(campaignRepository, never()).save(any());
+        // smoothing should not be called because budget check fails before smoothing
+        verifyNoInteractions(smoothingService);
+    }
+
+    @Test
+    @DisplayName("smoothing denies reservation -> no bid and no update")
+    void evaluateBid_smoothingDeniesReservation_noBid() {
+        Campaign campaign = new Campaign("Camp", Set.of("Kobler"), new BigDecimal("100.0"));
+        campaign.setId(20L);
+        campaign.setSpending(BigDecimal.ZERO);
+
+        when(campaignRepository.findAll()).thenReturn(List.of(campaign));
+        // smoothing denies token reservation
+        when(smoothingService.tryConsume(eq(20L), anyDouble())).thenReturn(false);
+
+        BidDecision decision = biddingService.evaluateBid(101L, Set.of("kObLeR"));
+
+        assertThat(decision.bid()).isFalse();
+        verify(campaignRepository, never()).save(any());
+        verify(smoothingService, times(1)).tryConsume(eq(20L), anyDouble());
     }
 
     @Test
@@ -124,6 +159,8 @@ class BiddingServiceTest {
         campaign2.setSpending(BigDecimal.ZERO);
 
         when(campaignRepository.findAll()).thenReturn(List.of(campaign1, campaign2));
+        // allow smoothing for whichever winner chosen
+        when(smoothingService.tryConsume(anyLong(), anyDouble())).thenReturn(true);
 
         // Evaluate bid - deterministicRandom will produce different random numbers for each candidate
         var decision = biddingService.evaluateBid(1000L, Set.of("kOBLeR"));
@@ -139,6 +176,7 @@ class BiddingServiceTest {
         assertThat(List.of(101L, 102L)).contains(winner.getId());
         // spending must equal decision amount
         assertThat(winner.getSpending()).isEqualByComparingTo(BigDecimal.valueOf(decision.bidAmount()));
+        verify(smoothingService, times(1)).tryConsume(anyLong(), anyDouble());
     }
 
     @Test
@@ -177,7 +215,7 @@ class BiddingServiceTest {
     void evaluateBid_singleMatchingCampaignNegativePrice_returnsNoBid() {
         // Arrange
         var random = mock(Random.class);
-        biddingService = new BiddingService(campaignRepository, random);
+        biddingService = new BiddingService(campaignRepository, random, smoothingService);
 
         Campaign campaign = new Campaign("C1", Set.of("sports"), new BigDecimal("5.0"));
         campaign.setId(1L);
@@ -191,6 +229,28 @@ class BiddingServiceTest {
         // Assert
         assertThat(decision.bid()).isFalse();
         verify(campaignRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Catch exception during campaign update and refund tokens")
+    void evaluateBid_failureUpdatingCampaign_refundsTokens() {
+        Campaign campaign = new Campaign("Camp", Set.of("Kobler"), new BigDecimal("100.0"));
+        campaign.setId(20L);
+        campaign.setSpending(BigDecimal.ZERO);
+
+        when(campaignRepository.findAll()).thenReturn(List.of(campaign));
+
+        // allow smoothing for whichever winner chosen
+        when(smoothingService.tryConsume(anyLong(), anyDouble())).thenReturn(true);
+        doThrow(new RuntimeException("Test exception")).when(campaignRepository).save(any());
+
+        // Act
+        var decision = biddingService.evaluateBid(1L, Set.of("Kobler"));
+
+        // Assert
+        assertThat(decision.bid()).isFalse();
+        verify(campaignRepository, times(1)).save(any());
+        verify(smoothingService, times(1)).refund(eq(20L), anyDouble());
     }
 
 }
