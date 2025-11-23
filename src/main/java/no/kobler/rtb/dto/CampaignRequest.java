@@ -10,15 +10,15 @@ import java.util.Set;
 
 public class CampaignRequest {
 
-    @NotBlank
+    @NotBlank(message = "Name cannot be blank")
     private String name;
 
-    @NotNull
-    @Size(min = 1)
-    private Set<@NotBlank String> keywords;
+    @NotNull(message = "Keywords cannot be null")
+    @Size(min = 1, message = "At least one keyword is required")
+    private Set<@NotBlank(message = "Keyword cannot be blank") String> keywords;
 
-    @NotNull
-    @DecimalMin(value = "0.0", inclusive = false)
+    @NotNull(message = "Budget cannot be null")
+    @DecimalMin(value = "0.0", inclusive = false, message = "Budget must be greater than zero")
     private BigDecimal budget;
 
     public CampaignRequest() {
