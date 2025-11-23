@@ -58,7 +58,7 @@ class BiddingServiceTest {
         var decision = biddingService.evaluateBid(1L, Set.of("Kobler"));
 
         assertThat(decision.bid()).isFalse();
-        verify(campaignRepository, never()).save(any());
+        verify(campaignRepository, never()).incrementSpendingIfNotExceed(anyLong(), any(BigDecimal.class));
         verifyNoInteractions(smoothingService);
     }
 
@@ -72,21 +72,28 @@ class BiddingServiceTest {
         when(campaignRepository.findAll()).thenReturn(List.of(campaign));
         // allow smoothing reservation
         when(smoothingService.tryConsume(anyLong(), anyDouble())).thenReturn(true);
+        // simulate successful atomic DB update
+        when(campaignRepository.incrementSpendingIfNotExceed(eq(10L), any(BigDecimal.class))).thenReturn(1);
 
         var decision = biddingService.evaluateBid(42L, Set.of("kobler"));
 
         // We expect a bid
         assertThat(decision.bid()).isTrue();
-        double amount = decision.bidAmount();
+        double amount = Math.round(decision.bidAmount() * 100) / 100.0;
         assertThat(amount).isBetween(0.0, 10.0);
 
-        ArgumentCaptor<Campaign> captor = ArgumentCaptor.forClass(Campaign.class);
-        verify(campaignRepository, times(1)).save(captor.capture());
+        // verify DB atomic increment was attempted with the correct id and amount
+        ArgumentCaptor<BigDecimal> amountCaptor = ArgumentCaptor.forClass(BigDecimal.class);
+        verify(campaignRepository, times(1))
+                .incrementSpendingIfNotExceed(eq(10L), amountCaptor.capture());
+        BigDecimal passedAmount = amountCaptor.getValue();
+        assertThat(passedAmount).isEqualByComparingTo(BigDecimal.valueOf(amount));
 
-        Campaign saved = captor.getValue();
-        // spending should equal the bid amount
-        assertThat(saved.getSpending()).isEqualByComparingTo(BigDecimal.valueOf(decision.bidAmount()));
-        verify(smoothingService, times(1)).tryConsume(10L, eq(amount));
+        // verify smoothing reservation attempted
+        verify(smoothingService, times(1)).tryConsume(eq(10L), eq(amount));
+
+        // in-memory campaign instance should have updated spending equal to amount
+        assertThat(campaign.getSpending()).isEqualByComparingTo(BigDecimal.valueOf(amount));
     }
 
     @Test
@@ -101,7 +108,7 @@ class BiddingServiceTest {
         var decision = biddingService.evaluateBid(9L, Set.of("KOBLER"));
 
         assertThat(decision.bid()).isFalse();
-        verify(campaignRepository, never()).save(any());
+        verify(campaignRepository, never()).incrementSpendingIfNotExceed(anyLong(), any(BigDecimal.class));
         // smoothing should not be called because budget check fails before smoothing
         verifyNoInteractions(smoothingService);
     }
@@ -123,8 +130,7 @@ class BiddingServiceTest {
 
         // Assert
         assertThat(decision.bid()).isFalse();
-        verify(campaignRepository, never()).save(any());
-        // smoothing should not be called because budget check fails before smoothing
+        verify(campaignRepository, never()).incrementSpendingIfNotExceed(anyLong(), any(BigDecimal.class));
         verifyNoInteractions(smoothingService);
     }
 
@@ -142,7 +148,7 @@ class BiddingServiceTest {
         BidDecision decision = biddingService.evaluateBid(101L, Set.of("kObLeR"));
 
         assertThat(decision.bid()).isFalse();
-        verify(campaignRepository, never()).save(any());
+        verify(campaignRepository, never()).incrementSpendingIfNotExceed(anyLong(), any(BigDecimal.class));
         verify(smoothingService, times(1)).tryConsume(eq(20L), anyDouble());
     }
 
@@ -161,22 +167,30 @@ class BiddingServiceTest {
         when(campaignRepository.findAll()).thenReturn(List.of(campaign1, campaign2));
         // allow smoothing for whichever winner chosen
         when(smoothingService.tryConsume(anyLong(), anyDouble())).thenReturn(true);
+        // simulate successful atomic DB update for whoever is winner
+        when(campaignRepository.incrementSpendingIfNotExceed(anyLong(), any(BigDecimal.class))).thenReturn(1);
 
         // Evaluate bid - deterministicRandom will produce different random numbers for each candidate
         var decision = biddingService.evaluateBid(1000L, Set.of("kOBLeR"));
 
         assertThat(decision.bid()).isTrue();
 
-        // verify exactly one save (only winner)
-        ArgumentCaptor<Campaign> cap = ArgumentCaptor.forClass(Campaign.class);
-        verify(campaignRepository, times(1)).save(cap.capture());
+        // verify exactly one increment attempt (only winner)
+        ArgumentCaptor<Long> campaignIdCaptor = ArgumentCaptor.forClass(Long.class);
+        ArgumentCaptor<BigDecimal> amountCaptor = ArgumentCaptor.forClass(BigDecimal.class);
+        verify(campaignRepository, times(1))
+                .incrementSpendingIfNotExceed(campaignIdCaptor.capture(), amountCaptor.capture());
+        Long passedCampaignId = campaignIdCaptor.getValue();
+        BigDecimal passedAmount = amountCaptor.getValue();
+
+
 
         // ensure that the winner is one of the candidates
-        Campaign winner = cap.getValue();
-        assertThat(List.of(101L, 102L)).contains(winner.getId());
+        assertThat(List.of(101L, 102L)).contains(passedCampaignId);
         // spending must equal decision amount
-        assertThat(winner.getSpending()).isEqualByComparingTo(BigDecimal.valueOf(decision.bidAmount()));
-        verify(smoothingService, times(1)).tryConsume(anyLong(), anyDouble());
+        assertThat(passedAmount).isEqualByComparingTo(BigDecimal.valueOf(decision.bidAmount()));
+        // ensure that the winner is one of the candidates by checking that smoothing was attempted for one id
+        verify(smoothingService, times(1)).tryConsume(passedCampaignId, passedAmount.doubleValue());
     }
 
     @Test
@@ -193,8 +207,8 @@ class BiddingServiceTest {
         assertThat(emptyDecision.bid()).isFalse();
 
         verifyNoInteractions(campaignRepository);
+        verifyNoInteractions(smoothingService);
     }
-
 
     @Test
     @DisplayName("If no winner is selected, returns no bid")
@@ -221,36 +235,62 @@ class BiddingServiceTest {
         campaign.setId(1L);
         campaign.setSpending(new BigDecimal("4.99")); // Almost spent
         when(campaignRepository.findAll()).thenReturn(List.of(campaign));
-        when(random.nextDouble()).thenReturn(-2.0); // Would be 5.0, but budget is 5.0 - 4.99 = 0.01
+        when(random.nextDouble()).thenReturn(-2.0); // negative price
 
         // Act
         var decision = biddingService.evaluateBid(1L, Set.of("sports"));
 
         // Assert
         assertThat(decision.bid()).isFalse();
-        verify(campaignRepository, never()).save(any());
+        verify(smoothingService, times(1)).tryConsume(anyLong(), anyDouble());
+        verify(campaignRepository, never()).incrementSpendingIfNotExceed(anyLong(), any(BigDecimal.class));
     }
 
     @Test
-    @DisplayName("Catch exception during campaign update and refund tokens")
+    @DisplayName("Catch exception during atomic update and refund tokens")
     void evaluateBid_failureUpdatingCampaign_refundsTokens() {
         Campaign campaign = new Campaign("Camp", Set.of("Kobler"), new BigDecimal("100.0"));
         campaign.setId(20L);
         campaign.setSpending(BigDecimal.ZERO);
 
         when(campaignRepository.findAll()).thenReturn(List.of(campaign));
-
-        // allow smoothing for whichever winner chosen
+        // allow smoothing reservation
         when(smoothingService.tryConsume(anyLong(), anyDouble())).thenReturn(true);
-        doThrow(new RuntimeException("Test exception")).when(campaignRepository).save(any());
+        // simulate DB error on the atomic update
+        doThrow(new RuntimeException("DB failure")).when(campaignRepository).incrementSpendingIfNotExceed(eq(20L), any(BigDecimal.class));
 
         // Act
         var decision = biddingService.evaluateBid(1L, Set.of("Kobler"));
 
         // Assert
         assertThat(decision.bid()).isFalse();
-        verify(campaignRepository, times(1)).save(any());
+        // ensure atomic update was attempted once
+        verify(campaignRepository, times(1)).incrementSpendingIfNotExceed(eq(20L), any(BigDecimal.class));
+        // smoothing token refunded on DB error
         verify(smoothingService, times(1)).refund(eq(20L), anyDouble());
     }
 
+    @Test
+    @DisplayName("Atomic update failed (concurrent/overspend) for campaignId, refunds tokens and tries next")
+    void evaluateBid_failureUpdatingCampaign_refundsTokensAndTriesNext() {
+        Campaign campaign = new Campaign("Camp", Set.of("Kobler"), new BigDecimal("100.0"));
+        campaign.setId(20L);
+        campaign.setSpending(BigDecimal.ZERO);
+
+        when(campaignRepository.findAll()).thenReturn(List.of(campaign));
+        // allow smoothing reservation
+        when(smoothingService.tryConsume(anyLong(), anyDouble())).thenReturn(true);
+        // simulate DB error on the atomic update
+        when(campaignRepository.incrementSpendingIfNotExceed(eq(20L), any(BigDecimal.class))).thenReturn(0);
+
+        // Act
+        var decision = biddingService.evaluateBid(1L, Set.of("Kobler"));
+
+        // Assert
+        assertThat(decision.bid()).isFalse();
+        // ensure atomic update was attempted once
+        verify(campaignRepository, times(1)).incrementSpendingIfNotExceed(eq(20L), any(BigDecimal.class));
+        // smoothing token refunded on DB error
+        verify(smoothingService, times(1)).refund(eq(20L), anyDouble());
+    }
 }

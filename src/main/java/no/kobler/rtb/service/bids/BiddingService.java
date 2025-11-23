@@ -10,6 +10,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Random;
@@ -30,16 +32,19 @@ public class BiddingService {
         this.smoothingService = smoothingService;
     }
 
+
     /**
-     * Evaluate a bid request.
+     * Evaluate bid with fallback and atomic DB update.
      * <p>
-     * - Find campaigns whose keywords match (trim stored keyword and incoming keyword, compare case-insensitively).
-     * - For each matching campaign, generate a random price in [0, 10].
-     * - Choose campaign with the highest random price.
-     * - If chosen campaign has sufficient budget (spending + price <= budget), persist spending and return bid.
-     * - Otherwise return no-bid.
-     * <p>
-     * Note: This implementation is intentionally synchronous and simple (single-instance).
+     * Behavior: we generate prices for all matching campaigns, sort by price descending,
+     *   and attempt each candidate in order (fallback) until one succeeds.
+     *   For persistence, we use an atomic conditional DB update (incrementSpendingIfNotExceed).
+     *   We reserve smoothing tokens before attempting DB update and refund if DB update fails.
+     * </p>
+     *
+     * @param bidId the id of the bid to evaluate
+     * @param incomingKeywords the set of keywords from the incoming bid
+     * @return a BidDecision with the bid result (bid, amount)
      */
     @Transactional
     public BidDecision evaluateBid(long bidId, Set<String> incomingKeywords) {
@@ -63,55 +68,69 @@ public class BiddingService {
             return new BidDecision(false, 0.0);
         }
 
-        // Generate random price for each candidate and pick the highest
-        Campaign winner = null;
-        double bestPrice = -1.0;
+        // Generate price for each candidate and sort by price descending (fallback order)
+        List<CandidatePrice> candidatePrices = new ArrayList<>();
         for (Campaign campaign : candidateCampaigns) {
-            double price = BigDecimal.valueOf(random.nextDouble() * 10.0)
+            double biddingPrice = BigDecimal.valueOf(random.nextDouble() * 10.0)
                     .setScale(2, RoundingMode.HALF_UP)
                     .doubleValue();
-            log.debug("Campaign id={} candidate price={}", campaign.getId(), price);
-            if (price > bestPrice) {
-                bestPrice = price;
-                winner = campaign;
+
+            candidatePrices.add(new CandidatePrice(campaign, biddingPrice));
+        }
+        candidatePrices.sort(Comparator.comparingDouble(CandidatePrice::price).reversed());
+
+        // Try each candidate in order
+        for (CandidatePrice cp : candidatePrices) {
+            Campaign campaign = cp.campaign();
+            double price = cp.price();
+            log.debug("Trying candidate id={} price={}", campaign.getId(), price);
+
+            // Quick budget check before attempting smoothing/reservation
+            BigDecimal currentSpending = Optional.ofNullable(campaign.getSpending()).orElse(BigDecimal.ZERO);
+            BigDecimal biddingPrice = BigDecimal.valueOf(price).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal newSpending = currentSpending.add(biddingPrice);
+            if (newSpending.compareTo(campaign.getBudget()) > 0) {
+                log.info("Candidate campaign id={} would overspend budget (spending={} + price={} > budget={}), skipping", campaign.getId(), currentSpending, price, campaign.getBudget());
+                continue; // try next candidate
+            }
+
+            // Reserve smoothing tokens
+            boolean reserved = smoothingService.tryConsume(campaign.getId(), price);
+            if (!reserved) {
+                log.info("Candidate campaign id={} failed smoothing reservation, skipping", campaign.getId());
+                continue; // try next candidate
+            }
+
+            // Attempt atomic DB update: increment spending only if it still fits budget
+            int updatedRows = 0;
+            try {
+                updatedRows = campaignRepository.incrementSpendingIfNotExceed(campaign.getId(), biddingPrice);
+            } catch (Exception e) {
+                log.error("DB update error for campaignId={} price={} : {}", campaign.getId(), price, e.getMessage());
+                // Refund tokens on DB exception
+                smoothingService.refund(campaign.getId(), price);
+                continue; // try next candidate
+            }
+
+            if (updatedRows == 1) {
+                // success — we can return bid. Update in-memory model for accuracy/response (optional)
+                campaign.setSpending(newSpending);
+                log.info("Placed bid for bidId={} campaignId={} amount={}", bidId, campaign.getId(), price);
+                return new BidDecision(true, price);
+            } else {
+                // somebody else updated or budget no longer sufficient; refund smoothing and try next
+                log.info("Atomic update failed (concurrent/overspend) for campaignId={}, refunding tokens and trying next", campaign.getId());
+                smoothingService.refund(campaign.getId(), price);
+                // Continue iterating
             }
         }
 
-        if (winner == null) {
-            log.debug("No winner selected for bidId={}, returning no-bid", bidId);
-            return new BidDecision(false, 0.0);
-        }
+        // If we reach here, no candidate succeeded
+        log.debug("All candidates exhausted for bidId={}, returning no-bid", bidId);
+        return new BidDecision(false, 0.0);
+    }
 
-        // Check budget: spending + price <= budget
-        BigDecimal currentSpending = Optional.ofNullable(winner.getSpending()).orElse(BigDecimal.ZERO);
-        BigDecimal biddingPrice = BigDecimal.valueOf(bestPrice);
-        BigDecimal newSpending = currentSpending.add(biddingPrice);
-
-        if (newSpending.compareTo(winner.getBudget()) > 0) {
-            log.info("Winner campaign id={} would overspend budget (spending={} + price={} > budget={}), returning no-bid",
-                    winner.getId(), currentSpending, bestPrice, winner.getBudget());
-            return new BidDecision(false, 0.0);
-        }
-
-        // Smoothing: try to reserve tokens for the campaign
-        boolean reserved = smoothingService.tryConsume(winner.getId(), bestPrice);
-        if (!reserved) {
-            // not enough short-term quota
-            log.info("Winner id={} failed smoothing check (insufficient tokens), returning no-bid", winner.getId());
-            return new BidDecision(false, 0.0);
-        }
-
-        // Persist spending. If saving fails, refund tokens.
-        try {
-            winner.setSpending(newSpending);
-            campaignRepository.save(winner);
-            log.info("Placed bid for bidId={} campaignId={} amount={}", bidId, winner.getId(), bestPrice);
-            return new BidDecision(true, bestPrice);
-        } catch (Exception e) {
-            log.error("Failed to persist spending for campaignId={}, refunding tokens. Error: {}", winner.getId(), e.getMessage());
-            smoothingService.refund(winner.getId(), bestPrice);
-            return new BidDecision(false, 0.0);
-        }
+    public record CandidatePrice(Campaign campaign, double price) {
     }
 
     /**
