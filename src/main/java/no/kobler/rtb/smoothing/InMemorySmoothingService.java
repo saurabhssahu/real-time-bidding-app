@@ -57,6 +57,7 @@ public class InMemorySmoothingService implements SmoothingService {
         TokenBucket bucket = bucketFor(campaignId);
         boolean ok = bucket.tryConsume(amount);
         log.debug("tryConsume campaignId={} amount={} -> {}", campaignId, amount, ok);
+        log.debug("Available tokens: {} for campaignId={}", bucket.getAvailableTokens(), campaignId);
         return ok;
     }
 

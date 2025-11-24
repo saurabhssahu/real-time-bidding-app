@@ -35,7 +35,8 @@ public class BidController {
         // initial validation handled by @Valid
         log.info("Received bid request id={} keywords={}", bidRequest.getBidId(), bidRequest.getKeywords());
 
-        Optional<BidDecision> optionalBidDecision = bidOrchestrator.evaluateWithDefaultTimeout(bidRequest.getBidId(), Set.copyOf(bidRequest.getKeywords()));
+        Optional<BidDecision> optionalBidDecision =
+                bidOrchestrator.evaluateWithDefaultTimeout(bidRequest.getBidId(), Set.copyOf(bidRequest.getKeywords()));
 
         if (optionalBidDecision.isEmpty() || !optionalBidDecision.get().bid()) {
             // timeout or error -> respond no-bid (204)

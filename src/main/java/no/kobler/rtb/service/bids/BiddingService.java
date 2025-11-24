@@ -59,16 +59,74 @@ public class BiddingService {
         List<Campaign> allCampaigns = campaignRepository.findAll();
 
         // Filter campaigns with at least one matching keyword (trim both sides and equalsIgnoreCase)
-        List<Campaign> candidateCampaigns = allCampaigns.stream()
-                .filter(campaign -> matchesAnyKeyword(campaign.getKeywords(), incomingKeywords))
-                .toList();
+        List<Campaign> candidateCampaigns = getCandidateCampaigns(allCampaigns, incomingKeywords);
 
         if (candidateCampaigns.isEmpty()) {
             log.debug("No matching campaigns for bidId={}, returning no-bid", bidId);
             return new BidDecision(false, 0.0);
         }
 
-        // Generate price for each candidate and sort by price descending (fallback order)
+        List<CandidatePrice> candidatePrices = buildCandidatePrices(candidateCampaigns);
+
+        Optional<BidDecision> winner = attemptToPlaceBid(bidId, candidatePrices);
+
+        return winner.orElseGet(() -> {
+            log.debug("All candidates exhausted for bidId={}, returning no-bid", bidId);
+            return new BidDecision(false, 0.0);
+        });
+    }
+
+    public record CandidatePrice(Campaign campaign, double price) {
+    }
+
+
+    /**
+     * Filters a list of campaigns based on whether any of their keywords match any of the incomingKeywords.
+     *
+     * @param allCampaigns     the list of campaigns to filter
+     * @param incomingKeywords the set of keywords to match against
+     * @return a list of campaigns that have at least one matching keyword
+     */
+    private List<Campaign> getCandidateCampaigns(List<Campaign> allCampaigns, Set<String> incomingKeywords) {
+        return allCampaigns.stream()
+                .filter(campaign -> matchesAnyKeyword(campaign.getKeywords(), incomingKeywords))
+                .toList();
+    }
+
+    /**
+     * Returns true if any of the campaignKeywords match any of the incomingKeywords.
+     * Both sides are trimmed and compared using equalsIgnoreCase.
+     *
+     * @param campaignKeywords the set of keywords from the campaign
+     * @param incomingKeywords the set of keywords from the incoming bid
+     * @return true if at least one keyword matches, false otherwise
+     */
+    private boolean matchesAnyKeyword(Set<String> campaignKeywords, Set<String> incomingKeywords) {
+        if (campaignKeywords == null || campaignKeywords.isEmpty()) return false;
+
+        for (String ck : campaignKeywords) {
+            if (ck == null) continue;
+            for (String ik : incomingKeywords) {
+                if (ik == null) continue;
+                if (ck.trim().equalsIgnoreCase(ik.trim())) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Builds a list of CandidatePrice objects from a list of campaigns.
+     * <p>
+     * Each campaign is given a random bidding price between 0.0 and 10.0
+     * (inclusive). The prices are then sorted in descending order.
+     *
+     * @param candidateCampaigns the list of campaigns to build prices for
+     * @return a list of CandidatePrice objects, sorted by price in descending order
+     */
+    private List<CandidatePrice> buildCandidatePrices(List<Campaign> candidateCampaigns) {
         List<CandidatePrice> candidatePrices = new ArrayList<>();
         for (Campaign campaign : candidateCampaigns) {
             double biddingPrice = BigDecimal.valueOf(random.nextDouble() * 10.0)
@@ -78,8 +136,27 @@ public class BiddingService {
             candidatePrices.add(new CandidatePrice(campaign, biddingPrice));
         }
         candidatePrices.sort(Comparator.comparingDouble(CandidatePrice::price).reversed());
+        return candidatePrices;
+    }
 
-        // Try each candidate in order
+
+    /**
+     * Attempt to place a bid for the given bidId using the provided list of candidate prices.
+     * <p>
+     * The method iterates over the candidate prices in descending order of price and attempts to
+     * reserve smoothing tokens `amount` for the campaign. If the campaign would overspend its budget, the
+     * next candidate is tried. If the campaign fails to reserve amount, the next candidate
+     * is tried. If the campaign fails to update its spending due to a concurrent update or
+     * overspending, the method refunds the amount and tries the next candidate.
+     * <p>
+     * If a bid is successfully placed, the method returns an Optional containing a BidDecision with the
+     * bid result (bidId, amount). If no bid can be placed, the method returns an empty Optional.
+     *
+     * @param bidId           the id of the bid to place
+     * @param candidatePrices the list of candidate prices to try
+     * @return an Optional containing a BidDecision with the bid result (bidId, amount) if successful, or an empty Optional if not
+     */
+    private Optional<BidDecision> attemptToPlaceBid(long bidId, List<CandidatePrice> candidatePrices) {
         for (CandidatePrice cp : candidatePrices) {
             Campaign campaign = cp.campaign();
             double price = cp.price();
@@ -113,10 +190,10 @@ public class BiddingService {
             }
 
             if (updatedRows == 1) {
-                // success — we can return bid. Update in-memory model for accuracy/response (optional)
+                // success — we can return bid.
                 campaign.setSpending(newSpending);
                 log.info("Placed bid for bidId={} campaignId={} amount={}", bidId, campaign.getId(), price);
-                return new BidDecision(true, price);
+                return Optional.of(new BidDecision(true, price));
             } else {
                 // somebody else updated or budget no longer sufficient; refund smoothing and try next
                 log.info("Atomic update failed (concurrent/overspend) for campaignId={}, refunding tokens and trying next", campaign.getId());
@@ -124,42 +201,6 @@ public class BiddingService {
                 // Continue iterating
             }
         }
-
-        // If we reach here, no candidate succeeded
-        log.debug("All candidates exhausted for bidId={}, returning no-bid", bidId);
-        return new BidDecision(false, 0.0);
-    }
-
-    public record CandidatePrice(Campaign campaign, double price) {
-    }
-
-    /**
-     * Returns true if any of the campaignKeywords match any of the incomingKeywords.
-     * Both sides are trimmed and compared using equalsIgnoreCase.
-     *
-     * @param campaignKeywords the set of keywords from the campaign
-     * @param incomingKeywords the set of keywords from the incoming bid
-     * @return true if at least one keyword matches, false otherwise
-     */
-    private boolean matchesAnyKeyword(Set<String> campaignKeywords, Set<String> incomingKeywords) {
-        if (campaignKeywords == null || campaignKeywords.isEmpty()) return false;
-
-//        boolean hasMatch = campaignKeywords.stream()
-//                .anyMatch(campaignKeyword ->
-//                        incomingKeywords.stream()
-//                                .anyMatch(keyword ->
-//                                        keyword.trim().equalsIgnoreCase(campaignKeyword.trim())));
-
-        for (String ck : campaignKeywords) {
-            if (ck == null) continue;
-            for (String ik : incomingKeywords) {
-                if (ik == null) continue;
-                if (ck.trim().equalsIgnoreCase(ik.trim())) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
+        return Optional.empty();
     }
 }

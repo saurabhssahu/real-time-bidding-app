@@ -3,7 +3,7 @@ package no.kobler.rtb.smoothing;
 import java.time.Instant;
 
 /**
- * Simple thread-safe token bucket storing double tokens.
+ * Simple thread-safe token bucket storing double tokens `amount`.
  * - capacity: maximum tokens bucket can hold
  * - refillRatePerSecond: tokens added per second
  * <p>
