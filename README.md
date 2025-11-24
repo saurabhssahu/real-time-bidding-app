@@ -52,6 +52,30 @@ This project is a small RTB (Real-Time Bidding) backend that supports:
 
 ---
 
+## Smoothing implementations
+
+The app supports two smoothing implementations:
+
+1. **In-memory (default)** — single-instance, used for local dev and default tests.
+    - Default is used when `smoothing.type` is not set or is `in-memory`.
+
+2. **Redis-backed (embedded)** — multi-instance safe, enabled when `smoothing.type=redis`.
+    - The app will start an embedded Redis server automatically for local dev/tests (no external Redis required).
+    - Enable by running:
+      ```
+      mvn spring-boot:run -Dspring-boot.run.arguments="--smoothing.type=redis"
+      ```
+    - Note: embedded Redis is for development and CI testing. In production point to a managed Redis instance and ensure
+      `smoothing.type=redis`.
+
+**Tests**
+
+- Existing unit and integration tests continue to use the in-memory smoothing (no changes required).
+- The test class `RedisSmoothingIntegrationTest` demonstrates Redis smoothing. Run it separately or enable the
+  `smoothing.type=redis` property for your test profile to exercise the Redis path.
+
+---
+
 ## ▶️ Getting Started
 
 ### **Application Access**

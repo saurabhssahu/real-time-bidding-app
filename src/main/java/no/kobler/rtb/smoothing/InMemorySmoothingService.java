@@ -2,7 +2,8 @@ package no.kobler.rtb.smoothing;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Service;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -14,7 +15,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * - capacity = 10.0
  * - refill rate = 1.0 tokens per second (10 / 10)
  */
-@Component
+@Service
+@ConditionalOnProperty(name = "smoothing.type", havingValue = "in-memory", matchIfMissing = true)
 public class InMemorySmoothingService implements SmoothingService {
 
     private static final Logger log = LoggerFactory.getLogger(InMemorySmoothingService.class);
