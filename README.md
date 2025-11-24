@@ -128,6 +128,58 @@ mvn -DskipTests=false test
 
 ---
 
+## 🐳 Docker Setup (Optional)
+
+### Prerequisites
+
+- Docker (latest stable version)
+- Docker Compose (included with Docker Desktop)
+
+### Building and Running with Docker Compose
+
+1. **Build and start all services** (from the project root directory):
+   ```bash
+   docker compose up --build -d
+   ```
+   This will:
+    - Build the application Docker image
+    - Start the Redis container
+    - Start the application container
+
+2. **View logs** (optional):
+   ```bash
+   docker compose logs -f app
+   ```
+
+3. **Stop all services**:
+   ```bash
+   docker compose down
+   ```
+
+4. **Rebuild and restart a single service** (e.g., after code changes):
+   ```bash
+   docker compose up --build -d --no-deps app
+   ```
+
+### Environment Variables
+
+The following environment variables can be configured in the `docker-compose.yml` file:
+
+- `smoothing.type`: Set to `redis` to use Redis for rate limiting (default)
+- `JAVA_OPTS`: JVM options (default: `-Xms256m -Xmx512m`)
+- `spring.redis.host`: Redis host (default: `localhost`)
+- `spring.redis.port`: Redis port (default: `6379`)
+
+### Cleanup
+
+To remove all containers, networks, and volumes:
+
+```bash
+docker compose down -v --rmi all --remove-orphans
+```
+
+---
+
 ## Postman Collection
 
 A Postman collection named `rtb-app.postman_collection.json` is available under:
