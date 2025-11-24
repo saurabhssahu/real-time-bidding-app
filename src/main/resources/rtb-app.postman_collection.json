@@ -1,0 +1,145 @@
+{
+  "info": {
+    "_postman_id": "3dcd1f82-ba21-42e7-940e-acc63d9635e8",
+    "name": "rtb-kobler",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "34504505"
+  },
+  "item": [
+    {
+      "name": "Get Campaigns",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/campaigns",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "campaigns"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Get Campaign by ID",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/campaigns/1",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "campaigns",
+            "1"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Save Campaigns",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n\"name\": \"Test campaign\",\n\"keywords\": [\n\"Kobler\",\n\"Contextual\"\n],\n\"budget\": 1000.0\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/campaigns",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "campaigns"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Make Bids",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "function generateRandomLong() {",
+              "    // Define minimum and maximum values for a 10-digit long.",
+              "    // Adjust these values based on your API's expected long range.",
+              "    const min = 1000000000; // Minimum 10-digit value",
+              "    const max = 9999999999; // Maximum 10-digit value",
+              "",
+              "    const randomNumber = Math.floor(Math.random() * (max - min + 1)) + min;",
+              "    return randomNumber;",
+              "}",
+              "",
+              "// Set the generated number as a collection variable named 'bidIdValue'",
+              "pm.collectionVariables.set('bidIdValue', generateRandomLong());",
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"bidId\": 7,\n    \"keywords\": [\n        \"kobler\"\n    ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/bids",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "bids"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "H2 DB",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/h2-console",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "h2-console"
+          ]
+        }
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "bidIdValue",
+      "value": ""
+    }
+  ]
+}

@@ -29,26 +29,35 @@ This project is a small RTB (Real-Time Bidding) backend that supports:
 
 ---
 
-## Project layout (planned)
+## Project Structure
 
-- `src/main` - main source code
-    - `java` - Java source code
-        - `no.kobler.rtb` - main application package
-            - `controller` - REST API controllers
-            - `dto` - Data Transfer Objects (DTOs)
-            - `model` - JPA entities and domain models
-            - `repository` - JPA repositories
-            - `service` - business logic and services
-- `src/test` - test code
-    - `java` - Java test code
-        - `no.kobler.rtb` - test package structure mirrors main
-            - `controller` - controller tests
-            - `repository` - repository tests
-            - `service` - service layer tests
-- `src/main/resources` - configuration files
-    - `application.yml` - main application configuration
-    - `application-test.yml` - test application configuration
-- `docker` - Dockerfiles and docker-compose.yml
+```
+src/
+├── main/
+│   ├── java/
+│   │   └── no/kobler/rtb/
+│   │       ├── config/           # Configuration classes
+│   │       ├── controller/       # REST API controllers
+│   │       ├── dto/              # Data Transfer Objects
+│   │       ├── error/            # Exception handling
+│   │       ├── model/            # JPA entities
+│   │       ├── repository/       # Data access layer │
+│   │       ├── service/          # Business logic
+│   │       │   └── bids/
+│   │       └── smoothing/        # Rate limiting/smoothing
+│   │
+│   └── resources/
+│       ├── application.yml       # Main configuration
+│       └── rtb-app.postman_collection.json #Postman collection
+│
+└── test/
+    └── java/
+        └── no/kobler/rtb/
+            ├── controller/        # Controller Integration tests
+            ├── repository/        # Repository tests
+            └── service/           # Service tests
+                └── bids/
+```
 
 ---
 
@@ -116,3 +125,28 @@ mvn spring-boot:run
 ```bash
 mvn -DskipTests=false test
 ```
+
+---
+
+## Postman Collection
+
+A Postman collection named `rtb-app.postman_collection.json` is available under:
+`src/main/resources/rtb-app.postman_collection.json`
+
+### Important Note
+
+To use the collection:
+
+- Either set a Postman variable named `base_url` (e.g., `http://localhost:8080`)
+- OR replace `{{base_url}}` in requests with your server host manually.
+    - Default base: `http://localhost:8080`
+
+---
+
+## Final Notes
+
+The application is intentionally simple and focused on correctness, determinism, and latency behavior.
+
+- Redis smoothing and atomic DB updates ensure consistent budget usage under concurrency.
+- The fallback logic ensures the best-priced eligible campaign wins without overspending.
+- Timeouts are enforced at orchestrator, Redis, and DB levels to guarantee 500ms bid SLAs.
