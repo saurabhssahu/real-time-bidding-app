@@ -7,21 +7,34 @@ spring:
     driverClassName: org.h2.Driver
     username: sa
     password:
+    hikari:
+      connection-init-sql: "SET LOCK_TIMEOUT 3000"  # query timeout in milliseconds
+      connection-timeout: 2000   # ms to obtain a connection from pool
+      validation-timeout: 500    # ms to validate a connection
+      maximum-pool-size: 10
   jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
     hibernate:
       ddl-auto: update
-    show-sql: false
+    show-sql: true
     properties:
+      jakarta:
+        persistence:
+          query:
+            timeout: 300   # milliseconds
       hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
         format_sql: true
+        jdbc:
+          timeout: 300     # some providers honor this
   h2:
     console:
       enabled: true
       path: /h2-console
-
   redis:
     host: localhost
-    port: 6379  # or any available port
+    port: 6379            # or any available port
+    timeout: 200ms        # Lettuce command timeout (read/write) — keep <500ms
 
 logging:
   level:
@@ -32,3 +45,4 @@ logging:
 # Default smoothing implementation: in-memory. Change to "redis" to use Redis.
 smoothing:
   type: in-memory
+  bid-timeout-ms: 500   # default orchestrator timeout
