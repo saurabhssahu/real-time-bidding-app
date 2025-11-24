@@ -9,14 +9,17 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
+import java.util.Random;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -32,11 +35,21 @@ class RedisSmoothingIntegrationTest {
 
     @Autowired
     MockMvc mvc;
+
     @Autowired
     CampaignRepository campaignRepository;
 
+    @MockBean
+    private Random random;
+
     @BeforeEach
     void cleanup() {
+        // This will return 0.4 for the first 4 calls, then 0.0
+        when(random.nextDouble())
+                .thenReturn(0.4)
+                .thenReturn(0.4)
+                .thenReturn(0.4);
+
         campaignRepository.deleteAll();
     }
 
@@ -48,8 +61,6 @@ class RedisSmoothingIntegrationTest {
         campaign.setSpending(BigDecimal.ZERO);
         campaign = campaignRepository.save(campaign);
 
-        // Force deterministic prices by sending fixed bids? For simplicity here we send three requests
-        // and only assert overall spending doesn't exceed capacity after calls.
         String req = """
                 {
                   "bidId": 9001,

@@ -2,7 +2,9 @@ package no.kobler.rtb.controller;
 
 import no.kobler.rtb.model.Campaign;
 import no.kobler.rtb.repository.CampaignRepository;
+import no.kobler.rtb.service.BidOrchestrator;
 import no.kobler.rtb.service.bids.BiddingService;
+import no.kobler.rtb.smoothing.SmoothingService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -15,10 +17,13 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
+import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -28,7 +33,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest
 @AutoConfigureMockMvc
-class BidControllerTest {
+class BidControllerIntegrationTest {
 
     @Autowired
     MockMvc mvc;
@@ -38,6 +43,9 @@ class BidControllerTest {
 
     @SpyBean
     private BiddingService biddingService;
+
+    @SpyBean
+    private SmoothingService smoothingService;
 
     @BeforeEach
     void cleanup() {
@@ -193,5 +201,26 @@ class BidControllerTest {
 
         // second campaign spent 5.00
         assertThat(updated2.getSpending()).isEqualByComparingTo(new BigDecimal("5.00"));
+    }
+
+    @Test
+    @DisplayName("POST /bids -> returns 204 when orchestrator times out")
+    void when_orchestrator_times_out_controller_returns_204() throws Exception {
+
+        var mockOrchestrator = mock(BidOrchestrator.class);
+        // simulate timeout -> orchestrator returns Optional.empty()
+        when(mockOrchestrator.evaluateWithDefaultTimeout(anyLong(), anySet()))
+                .thenReturn(Optional.empty());
+
+        String bidRequest = """
+                {
+                  "bidId": 1,
+                  "keywords": ["kobler"]
+                }
+                """;
+        mvc.perform(post("/bids")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(bidRequest))
+                .andExpect(status().isNoContent());
     }
 }
