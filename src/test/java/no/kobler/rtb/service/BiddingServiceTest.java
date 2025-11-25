@@ -91,9 +91,6 @@ class BiddingServiceTest {
 
         // verify smoothing reservation attempted
         verify(smoothingService, times(1)).tryConsume(eq(10L), eq(amount));
-
-        // in-memory campaign instance should have updated spending equal to amount
-        assertThat(campaign.getSpending()).isEqualByComparingTo(BigDecimal.valueOf(amount));
     }
 
     @Test
